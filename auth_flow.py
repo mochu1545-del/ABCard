@@ -85,12 +85,23 @@ class AuthFlow:
     def get_csrf_token(self) -> str:
         logger.info("[1/10] 获取 CSRF Token...")
         headers = self._common_headers("https://chatgpt.com/auth/login")
-        resp = self.session.get(
-            "https://chatgpt.com/api/auth/csrf",
-            headers=headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
+
+        # Cloudflare 可能在短时间内多次请求后返回 403，重试 3 次
+        for attempt in range(3):
+            resp = self.session.get(
+                "https://chatgpt.com/api/auth/csrf",
+                headers=headers,
+                timeout=30,
+            )
+            if resp.status_code == 403 and attempt < 2:
+                wait = (attempt + 1) * 5
+                logger.warning(f"Cloudflare 403, {wait}s 后重试 ({attempt + 1}/3)...")
+                import time
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+
         csrf = resp.json().get("csrfToken", "")
         if not csrf:
             raise RuntimeError("CSRF Token 获取失败")
