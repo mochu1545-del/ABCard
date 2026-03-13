@@ -7,6 +7,8 @@ import logging
 import os
 import sys
 import traceback
+import threading
+from collections import deque
 
 import streamlit as st
 
@@ -79,6 +81,10 @@ st.markdown("""
 
 ICONS = {"done": "✅", "running": "⏳", "error": "❌", "pending": "⬜"}
 
+# 后台日志缓存（线程安全）。
+_LOG_CACHE = deque(maxlen=5000)
+_LOG_LOCK = threading.Lock()
+
 
 def render_pipeline_html(nodes):
     """渲染连线式流水线"""
@@ -110,8 +116,26 @@ class LogCapture(logging.Handler):
         self.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S"))
 
     def emit(self, record):
-        if "log_buffer" in st.session_state:
-            st.session_state.log_buffer.append(self.format(record))
+        # 不在日志线程里访问 st.session_state，避免 ScriptRunContext 警告。
+        msg = self.format(record)
+        with _LOG_LOCK:
+            _LOG_CACHE.append(msg)
+
+
+def pull_captured_logs():
+    """将后台日志搬运到 session_state，需在主线程调用。"""
+    if "log_buffer" not in st.session_state:
+        st.session_state.log_buffer = []
+    with _LOG_LOCK:
+        if not _LOG_CACHE:
+            return
+        st.session_state.log_buffer.extend(list(_LOG_CACHE))
+        _LOG_CACHE.clear()
+
+
+def clear_captured_logs():
+    with _LOG_LOCK:
+        _LOG_CACHE.clear()
 
 
 def init_logging():
@@ -128,6 +152,9 @@ def init_logging():
 for k, v in {"log_buffer": [], "running": False, "result": None}.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# 每次 rerun 先同步一次日志缓存
+pull_captured_logs()
 
 
 # ════════════════════════════════════════
@@ -249,6 +276,7 @@ with tab_run:
         if st.button("🗑️ 清空", use_container_width=True):
             st.session_state.log_buffer = []
             st.session_state.result = None
+            clear_captured_logs()
             st.rerun()
 
     active_nodes = get_active_nodes()
@@ -257,6 +285,7 @@ with tab_run:
         st.session_state.running = True
         st.session_state.log_buffer = []
         st.session_state.result = None
+        clear_captured_logs()
         init_logging()
 
         pipeline_area = st.empty()
@@ -306,6 +335,7 @@ with tab_run:
                 node_status["register"] = "done"; _refresh()
                 store.save_credentials(auth_result.to_dict())
                 store.append_credentials_csv(auth_result.to_dict())
+                pull_captured_logs()
                 log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
             # ── Checkout ──
@@ -321,6 +351,7 @@ with tab_run:
                 rd["checkout_session_id"] = cs_id
                 rd["steps"]["checkout"] = "✅"
                 node_status["checkout"] = "done"; _refresh()
+                pull_captured_logs()
                 log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
                 node_status["fingerprint"] = "running"; _refresh()
@@ -329,6 +360,7 @@ with tab_run:
                 rd["stripe_pk"] = (pf.stripe_pk[:30] + "...") if pf.stripe_pk else ""
                 rd["steps"]["fingerprint"] = "✅"
                 node_status["fingerprint"] = "done"; _refresh()
+                pull_captured_logs()
                 log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
                 # ── 支付 ──
@@ -337,6 +369,7 @@ with tab_run:
                     pf.payment_method_id = pf.create_payment_method()
                     rd["steps"]["tokenize"] = "✅"
                     node_status["tokenize"] = "done"; _refresh()
+                    pull_captured_logs()
                     log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
                     node_status["confirm"] = "running"; _refresh()
@@ -392,9 +425,11 @@ with tab_run:
             with st.expander("Stripe 原始响应", expanded=True):
                 st.json(rd["confirm_response"])
 
+        pull_captured_logs()
         log_area.code("\n".join(st.session_state.log_buffer[-200:]), language="log")
 
     elif st.session_state.log_buffer:
+        pull_captured_logs()
         st.code("\n".join(st.session_state.log_buffer[-200:]), language="log")
 
     # ── 结果 ──

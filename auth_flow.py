@@ -97,7 +97,22 @@ class AuthFlow:
                 ip = re.search(r"ip=([^\n]+)", resp.text)
                 logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, "
                             f"地区: {loc.group(1) if loc else 'N/A'}")
+            else:
+                logger.warning(f"网络探测异常: cloudflare trace {resp.status_code}")
+
+            # 关键链路探测: chatgpt csrf
+            csrf_headers = self._common_headers("https://chatgpt.com/auth/login")
+            csrf_resp = self.session.get(
+                "https://chatgpt.com/api/auth/csrf",
+                headers=csrf_headers,
+                timeout=20,
+            )
+            if csrf_resp.status_code == 200:
+                logger.info("chatgpt csrf 连通正常")
                 return True
+
+            logger.warning(f"chatgpt csrf 连通异常: {csrf_resp.status_code}")
+            return False
         except Exception as e:
             logger.error(f"网络检查失败: {e}")
         return False
@@ -118,6 +133,11 @@ class AuthFlow:
             except Exception as e:
                 if self._is_tls_error(e) and self._rotate_impersonate_session():
                     continue
+                if self._is_tls_error(e):
+                    raise RuntimeError(
+                        "chatgpt.com TLS 握手失败，当前网络无法建立到 /api/auth/csrf 的 HTTPS 连接。"
+                        "请切换可直连 chatgpt.com 的网络或在界面中配置可用代理后重试。"
+                    ) from e
                 raise
             if resp.status_code == 403 and attempt < 2:
                 wait = (attempt + 1) * 5

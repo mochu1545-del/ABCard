@@ -35,6 +35,8 @@ def create_http_session(proxy: Optional[str] = None, impersonate: str = "chrome1
     """
     if _HAS_CFFI:
         session = CffiSession(impersonate=impersonate)
+        # 使用显式配置，避免被系统 HTTP(S)_PROXY 隐式污染。
+        session.trust_env = False
         if proxy:
             # curl_cffi 在 SOCKS 代理下建议使用 socks5h，让 DNS 走代理端解析。
             # 这能减少本地 DNS/链路导致的 TLS 握手异常。
@@ -46,6 +48,7 @@ def create_http_session(proxy: Optional[str] = None, impersonate: str = "chrome1
         return session
     else:
         session = requests.Session()
+        session.trust_env = False
         retry = Retry(
             total=3,
             backoff_factor=1,
