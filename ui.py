@@ -271,9 +271,9 @@ def get_active_nodes():
 with tab_run:
     bc1, bc2 = st.columns([3, 1])
     with bc1:
-        run_btn = st.button("🚀 开始执行", disabled=st.session_state.running or not steps_list, use_container_width=True, type="primary")
+        run_btn = st.button("🚀 开始执行", disabled=st.session_state.running or not steps_list, width="stretch", type="primary")
     with bc2:
-        if st.button("🗑️ 清空", use_container_width=True):
+        if st.button("🗑️ 清空", width="stretch"):
             st.session_state.log_buffer = []
             st.session_state.result = None
             clear_captured_logs()
@@ -470,7 +470,7 @@ with tab_accounts:
             import pandas as pd
             df = pd.read_csv(csv_path)
             if not df.empty:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
                 st.caption(f"共 {len(df)} 条记录")
                 if st.button("🔄 刷新", key="ref_acc"):
                     st.rerun()
@@ -505,7 +505,7 @@ with tab_history:
             import pandas as pd
             df = pd.read_csv(hist_path)
             if not df.empty:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
                 st.caption(f"共 {len(df)} 条")
                 if st.button("🔄 刷新", key="ref_hist"):
                     st.rerun()
