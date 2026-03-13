@@ -22,21 +22,50 @@ class CaptchaSolver:
         site_key: str,
         site_url: str,
         rqdata: str = "",
+        user_agent: str = "",
+        proxy: str = "",
         timeout: int = 120,
         poll_interval: int = 5,
-    ) -> Optional[str]:
+    ) -> Optional[dict]:
         """
         提交 hCaptcha 任务并等待结果。
-        返回 gRecaptchaResponse token，失败返回 None。
+        返回 {"token": ..., "ekey": ...}，失败返回 None。
         """
-        task = {
-            "type": "HCaptchaTaskProxyless",
-            "websiteURL": site_url,
-            "websiteKey": site_key,
-        }
+        # 如果有代理，用带代理的任务类型（token 和 API 请求同 IP）
+        if proxy:
+            task = {
+                "type": "HCaptchaTask",
+                "websiteURL": site_url,
+                "websiteKey": site_key,
+                "isEnterprise": True,
+            }
+            # 解析代理格式: socks5://user:pass@host:port 或 http://host:port
+            task["proxyType"] = "socks5" if "socks" in proxy.lower() else "http"
+            # 提取 host:port
+            proxy_clean = proxy.split("://")[-1]
+            if "@" in proxy_clean:
+                auth, hostport = proxy_clean.rsplit("@", 1)
+                if ":" in auth:
+                    task["proxyLogin"], task["proxyPassword"] = auth.split(":", 1)
+            else:
+                hostport = proxy_clean
+            if ":" in hostport:
+                task["proxyAddress"], port = hostport.rsplit(":", 1)
+                task["proxyPort"] = int(port)
+            else:
+                task["proxyAddress"] = hostport
+                task["proxyPort"] = 1080
+        else:
+            task = {
+                "type": "HCaptchaTaskProxyless",
+                "websiteURL": site_url,
+                "websiteKey": site_key,
+                "isEnterprise": True,
+            }
         if rqdata:
             task["enterprisePayload"] = {"rqdata": rqdata}
-            task["isEnterprise"] = True
+        if user_agent:
+            task["userAgent"] = user_agent
 
         create_body = {
             "clientKey": self.client_key,
@@ -83,10 +112,12 @@ class CaptchaSolver:
 
             status = result_data.get("status", "")
             if status == "ready":
-                token = result_data.get("solution", {}).get("gRecaptchaResponse", "")
+                solution = result_data.get("solution", {})
+                token = solution.get("gRecaptchaResponse", "")
+                ekey = solution.get("eKey", "") or solution.get("respKey", "")
                 if token:
-                    logger.info(f"hCaptcha 已解决, token 长度: {len(token)}")
-                    return token
+                    logger.info(f"hCaptcha 已解决, token 长度: {len(token)}, ekey: {bool(ekey)}")
+                    return {"token": token, "ekey": ekey}
                 logger.error(f"打码结果缺少 token: {result_data}")
                 return None
             elif status == "processing":
