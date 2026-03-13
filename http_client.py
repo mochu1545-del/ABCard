@@ -36,7 +36,13 @@ def create_http_session(proxy: Optional[str] = None, impersonate: str = "chrome1
     if _HAS_CFFI:
         session = CffiSession(impersonate=impersonate)
         if proxy:
-            session.proxies = {"https": proxy, "http": proxy}
+            # curl_cffi 在 SOCKS 代理下建议使用 socks5h，让 DNS 走代理端解析。
+            # 这能减少本地 DNS/链路导致的 TLS 握手异常。
+            normalized_proxy = proxy
+            if proxy.startswith("socks5://"):
+                normalized_proxy = "socks5h://" + proxy[len("socks5://"):]
+                logger.info("代理协议已标准化: socks5:// -> socks5h://")
+            session.proxies = {"https": normalized_proxy, "http": normalized_proxy}
         return session
     else:
         session = requests.Session()
