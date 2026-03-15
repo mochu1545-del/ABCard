@@ -99,6 +99,21 @@ def _parse_card_text(text: str) -> dict:
             if digits.isdigit() and 13 <= len(digits) <= 19:
                 result["card_number"] = digits
                 break
+
+    # 检查 "cardnum MM YY CVC" 单行格式 (如 "5481087136282260 03 32 221")
+    if "card_number" not in result:
+        for line in lines:
+            m = _re.match(r'^(\d{13,19})\s+(0[1-9]|1[0-2])\s+(\d{2,4})\s+(\d{3,4})$', line.replace("-", "").strip())
+            if m:
+                result["card_number"] = m.group(1)
+                result["exp_month"] = m.group(2)
+                yr = m.group(3)
+                if len(yr) == 2:
+                    yr = "20" + yr
+                result["exp_year"] = yr
+                result["cvv"] = m.group(4)
+                break
+
     # 回退: 纯数字行
     if "card_number" not in result:
         for line in lines:
@@ -268,6 +283,82 @@ def _parse_card_text(text: str) -> dict:
     for k in ("姓名", "name", "cardholder", "持卡人"):
         if k in kv:
             result["billing_name"] = kv[k]
+            break
+
+    # ── 纯文本多行回退: 从非卡/非地址行中提取姓名 ──
+    if "billing_name" not in result:
+        for line in lines:
+            # 跳过已被解析的行 (卡号行、地址行)
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # 跳过纯数字/卡号行
+            if _re.match(r'^[\d\s/\-]+$', stripped):
+                continue
+            # 跳过含邮编/地址的行
+            if _re.search(r'\d{5}', stripped) and ',' in stripped:
+                continue
+            # 跳过键值对行
+            if _re.match(r'^.+?[:：]', stripped):
+                continue
+            # 可能是姓名: 2-5 个英文单词 (首字母大写)
+            if _re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,4}$', stripped):
+                result["billing_name"] = stripped
+                break
+
+    # ── 纯文本多行回退: 从第二行解析地址 (如 "38 Pearl Avenue, Louisville, MS 39339, US") ──
+    if "address_line1" not in result and len(lines) >= 2:
+        for line in lines:
+            stripped = line.strip()
+            # 跳过卡号行 (全数字+空格)
+            if _re.match(r'^[\d\s/\-]+$', stripped):
+                continue
+            # 候选地址行: 含逗号、有数字(门牌号或邮编)
+            if ',' in stripped and _re.search(r'\d', stripped):
+                result["raw_address"] = stripped
+                parts = [p.strip() for p in stripped.split(",")]
+                # 检查最后部分是否是国家
+                if len(parts) >= 2:
+                    last = parts[-1].strip()
+                    country_info = _COUNTRY_ALIAS.get(last)
+                    if country_info:
+                        result["country_code"] = country_info[0]
+                        result["currency"] = country_info[1]
+                        parts = parts[:-1]
+                # 提取邮编
+                for idx, p in enumerate(parts):
+                    zip_match = _re.search(r'\b(\d{5}(?:-\d{4})?)\b', p)
+                    if zip_match:
+                        result["postal_code"] = zip_match.group(1)
+                        # 带邮编的部分可能是 "MS 39339" 或 "Louisville, MS 39339"
+                        # 提取 state 代码
+                        state_match = _re.match(r'^([A-Z]{2})\s+\d{5}', p.strip())
+                        if state_match:
+                            result["address_state"] = state_match.group(1)
+                            parts.pop(idx)
+                        else:
+                            # 邮编在地址部分中, 分离
+                            clean = _re.sub(r'\s*\d{5}(?:-\d{4})?\s*', '', p).strip()
+                            if clean:
+                                parts[idx] = clean
+                            else:
+                                parts.pop(idx)
+                        break
+                # 分配剩余部分
+                if len(parts) >= 1:
+                    result["address_line1"] = parts[0]
+                if len(parts) >= 2 and "address_state" not in result:
+                    # 可能是 city 或 city, state
+                    city_state = parts[1].strip()
+                    csm = _re.match(r'^(.+?)\s+([A-Z]{2})$', city_state)
+                    if csm:
+                        result["address_city"] = csm.group(1)
+                        result["address_state"] = csm.group(2)
+                    else:
+                        result["address_city"] = city_state
+                elif len(parts) >= 2:
+                    result["address_city"] = parts[1]
+                break
             break
 
     return result
