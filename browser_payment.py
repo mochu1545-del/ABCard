@@ -1309,6 +1309,14 @@ class BrowserPayment:
                 "--disable-extensions",
                 "--disable-background-networking",
                 "--disable-sync",
+                "--disable-translate",
+                "--disable-default-apps",
+                "--disable-hang-monitor",
+                "--disable-prompt-on-repost",
+                "--disable-domain-reliability",
+                "--disable-component-update",
+                "--disable-breakpad",
+                "--metrics-recording-only",
                 "--window-size=1366,900",
                 f"--user-data-dir={user_data_dir}",
                 "--use-gl=angle",
@@ -1346,6 +1354,17 @@ class BrowserPayment:
                 browser = p.chromium.connect_over_cdp(cdp_url)
                 context = browser.contexts[0]
 
+                # 诊断: 检查 session_token
+                _st_len = len(session_token) if session_token else 0
+                _st_preview = f"{session_token[:20]}...{session_token[-10:]}" if _st_len > 30 else session_token
+                logger.info(f"[Checkout] session_token: len={_st_len}, preview={_st_preview}")
+                logger.info(f"[Checkout] device_id: {device_id[:20] if device_id else 'NONE'}")
+                logger.info(f"[Checkout] proxy: {self.proxy or 'NONE'}")
+
+                if not session_token:
+                    logger.error("[Checkout] session_token 为空!")
+                    return {"success": False, "error": "session_token 为空，无法加载 checkout"}
+
                 # 设置 ChatGPT session cookie
                 context.add_cookies([
                     {
@@ -1374,35 +1393,68 @@ class BrowserPayment:
                 # Step 1: 先访问 chatgpt.com 通过 Cloudflare
                 logger.info("[Checkout] 通过 Cloudflare...")
                 page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
-                for _cf_wait in range(15):
-                    time.sleep(2)
+                _cf_passed = False
+                for _cf_wait in range(20):
+                    time.sleep(3)
                     _title = page.title()
+                    _cur_url = page.url
                     if "请稍候" not in _title and "Just a moment" not in _title:
-                        logger.info(f"[Checkout] Cloudflare 已通过 ({(_cf_wait+1)*2}s)")
+                        logger.info(f"[Checkout] Cloudflare 已通过 ({(_cf_wait+1)*3}s) title={_title[:30]} url={_cur_url[:60]}")
+                        _cf_passed = True
                         break
+                    elif _cf_wait % 3 == 2:
+                        logger.info(f"[Checkout] CF 等待中 ({(_cf_wait+1)*3}s) title={_title[:30]}")
+
+                if not _cf_passed:
+                    _title = page.title()
+                    body_text = page.evaluate("document.body ? document.body.innerText.substring(0, 300) : ''")
+                    logger.warning(f"[Checkout] Cloudflare 未通过! title={_title}, body={body_text[:200]}")
+                    return {"success": False, "error": "Cloudflare 验证失败"}
+
+                # 诊断: 检查浏览器的出口 IP
+                try:
+                    page.goto("https://cloudflare.com/cdn-cgi/trace", wait_until="domcontentloaded", timeout=15000)
+                    _trace = page.evaluate("document.body ? document.body.innerText : ''")
+                    _ip_line = [l for l in _trace.split('\n') if l.startswith('ip=')]
+                    logger.info(f"[Checkout] 浏览器出口 IP: {_ip_line[0] if _ip_line else 'unknown'}")
+                except Exception as _e:
+                    logger.warning(f"[Checkout] IP 检查失败: {_e}")
+
                 time.sleep(1)
 
                 # Step 2: 导航到 checkout 页面
                 logger.info(f"[Checkout] 加载 checkout 页面...")
                 page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(2)
+                _post_nav_url = page.url
+                logger.info(f"[Checkout] checkout 页面加载后 URL: {_post_nav_url}")
 
-                # 等待 Stripe Payment Element 加载 (React SPA 需要时间)
+                # 检查是否被重定向回首页
+                if "/checkout/" not in _post_nav_url:
+                    body_text = page.evaluate("document.body ? document.body.innerText.substring(0, 300) : ''")
+                    logger.warning(f"[Checkout] 被重定向! URL={_post_nav_url}, body={body_text[:200]}")
+                    return {"success": False, "error": "checkout 页面被重定向，请检查登录状态"}
+
+                # 等待 Stripe Payment Element 加载 (React SPA 需要时间, 1H1G 需要更久)
                 logger.info("[Checkout] 等待 Stripe Payment Element...")
                 stripe_loaded = False
-                for _pe_wait in range(20):
-                    time.sleep(2)
+                for _pe_wait in range(30):
+                    time.sleep(3)
                     _iframes = page.query_selector_all('iframe[name*="__privateStripeFrame"]')
                     _visible = [el for el in _iframes if (el.bounding_box() or {}).get("height", 0) > 30]
                     if len(_visible) >= 1:
-                        logger.info(f"[Checkout] Stripe Element 已加载 ({(_pe_wait+1)*2}s, {len(_visible)} 可见)")
+                        logger.info(f"[Checkout] Stripe Element 已加载 ({(_pe_wait+1)*3}s, {len(_visible)} 可见)")
                         stripe_loaded = True
                         break
+                    if _pe_wait % 5 == 4:
+                        logger.info(f"[Checkout] 等待中... ({(_pe_wait+1)*3}s, iframes={len(_iframes)})")
                 time.sleep(2)
 
                 if not stripe_loaded:
-                    body_text = page.evaluate("document.body ? document.body.innerText.substring(0, 300) : ''")
-                    logger.warning(f"[Checkout] Stripe 未加载, 页面: {body_text[:200]}")
-                    return {"success": False, "error": "Stripe Payment Element 未加载"}
+                    body_text = page.evaluate("document.body ? document.body.innerText.substring(0, 500) : ''")
+                    page_url = page.url
+                    logger.warning(f"[Checkout] Stripe 未加载, URL: {page_url}, 页面: {body_text[:300]}")
+                    return {"success": False, "error": f"Stripe Payment Element 未加载 ({page_url})"}
 
                 # 模拟人类行为
                 self._simulate_human_behavior(page)

@@ -26,6 +26,34 @@ init_db()
 
 OUTPUT_DIR = "test_outputs"
 
+
+def _sanitize_error(raw_error: str) -> str:
+    """将技术性错误信息转为用户友好的简要提示"""
+    if not raw_error:
+        return "执行失败"
+    e = raw_error.lower()
+    if "payment element" in e or "stripe" in e and "未加载" in raw_error:
+        return "支付页面加载失败，请稍后重试"
+    if "cloudflare" in e or "请稍候" in raw_error or "just a moment" in e:
+        return "网络验证失败，请稍后重试"
+    if "支付被拒" in raw_error or "card_declined" in e or "declined" in e:
+        return "支付被拒，请检查卡片信息"
+    if "用户手动终止" in raw_error:
+        return "已取消"
+    if "session_token" in e or "sentinel" in e or "403" in raw_error:
+        return "登录凭证失效，请更换 Token"
+    if "curl" in e or "url rejected" in e or "connection" in e or "timeout" in e:
+        return "网络连接失败，请检查代理配置"
+    if "captcha" in e or "hcaptcha" in e:
+        return "人机验证失败，请重试"
+    if "oom" in e or "memory" in e:
+        return "服务器资源不足，请稍后重试"
+    if "额度" in raw_error or "已用完" in raw_error:
+        return raw_error  # 兑换码相关信息直接显示
+    # 兜底: 只显示简要信息
+    return "执行失败，请重试"
+
+
 import re as _re
 
 # 国家名/后缀 → (country_code, currency) 映射
@@ -492,6 +520,8 @@ if account_source == "选择已有账号":
 
 elif account_source == "手动输入 Token":
     cred_access_token = st.text_input("access_token", placeholder="eyJhbGciOi...", type="password", key="w_manual_at")
+    cred_session_token = st.text_input("session_token", placeholder="eyJhbGciOi...", type="password", key="w_manual_st",
+                                        help="浏览器 F12 → Application → Cookies → __Secure-next-auth.session-token")
     cred_email = st.text_input("邮箱 (可选)", placeholder="user@example.com", key="w_manual_email")
 
 # ── 注册模式下显示邮箱配置 ──
@@ -910,6 +940,8 @@ with tab_run:
         elif use_existing_creds and do_checkout:
             if not cred_access_token:
                 _errors.append("请提供 access_token")
+            if do_payment and not cred_session_token:
+                _errors.append("请提供 session_token (支付时必须)")
         if do_payment:
             if not card_number:
                 _errors.append("请填写卡号")
@@ -1021,7 +1053,7 @@ with tab_run:
             st.progress(1.0)
             st.success(f"全部完成 — {r.get('email', '')}")
         elif r.get("error"):
-            st.error(f"{r.get('error', '')}")
+            st.error(_sanitize_error(r.get('error', '')))
 
         if dev_mode:
             st.divider()
@@ -1108,7 +1140,7 @@ with tab_history:
                 "状态": {"success": "✅ 成功", "failed": "❌ 失败", "running": "🔄 运行中", "pending": "⏳ 等待"}.get(r["status"], r["status"]),
                 "邮箱": r.get("email") or "-",
                 "计划": r.get("plan_type") or "-",
-                "错误": r.get("error_msg") or "",
+                "备注": _sanitize_error(r.get("error_msg") or "") if r["status"] == "failed" else "",
                 "时间": r["created_at"][:19],
             })
         st.dataframe(pd.DataFrame(_disp), hide_index=True, use_container_width=True)
